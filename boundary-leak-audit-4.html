@@ -1,0 +1,1261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Boundary Leak Audit | The Deviant's Guide</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,700;0,900;1,400;1,700;1,900&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Bebas+Neue&display=swap" rel="stylesheet">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --plum: #33172e;
+  --purple: #9B4DFF;
+  --pink: #FF1D9B;
+  --teal: #51F9C1;
+  --cream: #F9F4D8;
+  --silver: #C8C0C8;
+  --dark: #0e060c;
+  --dark2: #180d14;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--dark);
+  color: var(--cream);
+  font-family: 'DM Mono', monospace;
+  min-height: 100vh;
+  overflow-x: hidden;
+  line-height: 1.6;
+}
+
+/* Grain */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 100;
+  opacity: 0.35;
+  mix-blend-mode: overlay;
+}
+
+/* Ambient glows */
+.glow-tl {
+  position: fixed; top: -15%; left: -10%;
+  width: 55%; height: 55%;
+  background: radial-gradient(ellipse, rgba(155,77,255,0.14) 0%, transparent 65%);
+  pointer-events: none; z-index: 0;
+}
+.glow-br {
+  position: fixed; bottom: -20%; right: -10%;
+  width: 60%; height: 60%;
+  background: radial-gradient(ellipse, rgba(255,29,155,0.11) 0%, transparent 65%);
+  pointer-events: none; z-index: 0;
+}
+
+/* Scanline */
+.scanline {
+  position: fixed; left: 0; right: 0; height: 1px; top: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(81,249,193,0.4) 50%, transparent 100%);
+  animation: scan 8s linear infinite;
+  z-index: 101; pointer-events: none; opacity: 0.2;
+}
+@keyframes scan { from { top: -1px; } to { top: 100vh; } }
+
+.wrap {
+  position: relative; z-index: 2;
+  max-width: 660px;
+  margin: 0 auto;
+  padding: 48px 24px 100px;
+}
+
+/* Brand header */
+.masthead {
+  text-align: center;
+  margin-bottom: 52px;
+  opacity: 0;
+  animation: riseIn 0.7s 0.1s ease forwards;
+}
+.masthead-name {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 11px; letter-spacing: 5px;
+  color: var(--teal); text-transform: uppercase;
+  margin-bottom: 3px;
+}
+.masthead-sub {
+  font-size: 9px; letter-spacing: 3px;
+  color: var(--silver); opacity: 0.4;
+  text-transform: uppercase;
+}
+
+/* Screen system */
+.screen { display: none; }
+.screen.active {
+  display: block;
+  animation: riseIn 0.45s ease forwards;
+}
+
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── INTRO ─── */
+.intro-kicker {
+  display: inline-block;
+  font-size: 9px; letter-spacing: 4px;
+  color: var(--pink); text-transform: uppercase;
+  border: 1px solid rgba(255,29,155,0.35);
+  padding: 6px 14px; margin-bottom: 24px;
+}
+
+.intro-h1 {
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(38px, 8vw, 62px);
+  font-weight: 900;
+  line-height: 1.0;
+  margin-bottom: 28px;
+  letter-spacing: -1px;
+}
+.intro-h1 .line2 {
+  display: block;
+  font-style: italic;
+  color: var(--pink);
+}
+.intro-h1 .line3 {
+  display: block;
+  color: var(--teal);
+}
+
+.intro-rule {
+  width: 48px; height: 2px;
+  background: linear-gradient(90deg, var(--pink), var(--purple));
+  margin-bottom: 28px;
+}
+
+.intro-body {
+  font-size: 13px; line-height: 1.85;
+  color: var(--silver);
+  margin-bottom: 12px;
+}
+.intro-body strong { color: var(--cream); font-weight: 500; }
+.intro-body em { color: var(--teal); font-style: normal; }
+
+.warning-box {
+  border: 1px solid rgba(255,29,155,0.25);
+  background: rgba(255,29,155,0.04);
+  padding: 18px 20px;
+  margin: 28px 0 36px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--silver);
+}
+.warning-box strong { color: var(--pink); font-weight: 500; }
+
+/* Leak teaser block on intro — mystery version */
+.leak-teaser {
+  margin: 0 0 36px;
+  padding: 22px 20px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-left: 2px solid var(--purple);
+}
+.lt-lead {
+  font-family: 'Playfair Display', serif;
+  font-size: 15px; font-style: italic;
+  color: var(--cream); margin-bottom: 16px;
+}
+.lt-line {
+  font-size: 12px; color: var(--silver);
+  line-height: 1.6; margin-bottom: 6px;
+  padding-left: 10px;
+  border-left: 1px solid rgba(255,255,255,0.12);
+}
+.lt-close {
+  font-size: 12px; color: var(--cream);
+  margin-top: 16px; line-height: 1.6;
+}
+.lt-close em { color: var(--teal); font-style: normal; }
+
+.meta-row {
+  display: flex; gap: 0;
+  margin-bottom: 36px;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.meta-item {
+  flex: 1; padding: 16px 12px;
+  text-align: center;
+  border-right: 1px solid rgba(255,255,255,0.08);
+}
+.meta-item:last-child { border-right: none; }
+.meta-num {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 28px; color: var(--teal);
+  display: block; line-height: 1;
+  margin-bottom: 4px;
+}
+.meta-label {
+  font-size: 9px; letter-spacing: 2px;
+  color: var(--silver); opacity: 0.5;
+  text-transform: uppercase;
+}
+
+/* ─── BUTTONS ─── */
+.btn-main {
+  display: block; width: 100%;
+  padding: 22px 32px;
+  background: var(--pink);
+  color: var(--dark);
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 22px; letter-spacing: 4px;
+  border: none; cursor: pointer;
+  position: relative; overflow: hidden;
+  transition: all 0.25s ease;
+}
+.btn-main::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(135deg, rgba(255,255,255,0.18) 0%, transparent 55%);
+}
+.btn-main:hover {
+  background: var(--purple);
+  box-shadow: 0 0 40px rgba(255,29,155,0.35);
+  transform: translateY(-2px);
+}
+
+/* ─── QUESTIONS ─── */
+.progress-track {
+  display: flex; gap: 5px;
+  margin-bottom: 44px;
+}
+.prog-seg {
+  height: 2px; flex: 1;
+  background: rgba(255,255,255,0.08);
+  transition: background 0.5s ease;
+  position: relative;
+}
+.prog-seg.done { background: var(--teal); }
+.prog-seg.active {
+  background: var(--pink);
+  box-shadow: 0 0 8px rgba(255,29,155,0.6);
+}
+
+.q-meta {
+  display: flex; align-items: center;
+  gap: 12px; margin-bottom: 14px;
+}
+.q-num {
+  font-size: 9px; letter-spacing: 3px;
+  color: var(--purple); text-transform: uppercase;
+}
+.q-face-tag {
+  font-size: 9px; letter-spacing: 2px;
+  color: var(--teal); text-transform: uppercase;
+  padding: 3px 10px;
+  border: 1px solid rgba(81,249,193,0.3);
+}
+
+.q-headline {
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(24px, 5vw, 34px);
+  font-weight: 700; line-height: 1.2;
+  margin-bottom: 10px;
+  color: var(--cream);
+}
+
+.q-framing {
+  font-size: 11px; color: var(--silver);
+  opacity: 0.55; margin-bottom: 26px;
+  font-style: italic; letter-spacing: 0.3px;
+}
+
+.scene {
+  border-left: 3px solid rgba(155,77,255,0.5);
+  padding: 14px 18px;
+  background: rgba(155,77,255,0.05);
+  margin-bottom: 30px;
+  font-size: 13px; line-height: 1.75;
+  color: var(--silver); font-style: italic;
+}
+.scene strong { color: var(--purple); font-style: normal; font-weight: 400; }
+
+.options { display: flex; flex-direction: column; gap: 9px; }
+
+.opt {
+  padding: 17px 18px;
+  border: 1px solid rgba(255,255,255,0.09);
+  background: rgba(255,255,255,0.015);
+  cursor: pointer;
+  font-family: 'DM Mono', monospace;
+  font-size: 12.5px; line-height: 1.6;
+  color: var(--cream); text-align: left;
+  transition: all 0.2s ease;
+  position: relative; overflow: hidden;
+}
+.opt::before {
+  content: '';
+  position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  background: var(--pink); transform: scaleY(0);
+  transition: transform 0.2s ease; transform-origin: bottom;
+}
+.opt:hover {
+  border-color: rgba(255,29,155,0.3);
+  background: rgba(255,29,155,0.05);
+  transform: translateX(3px);
+}
+.opt:hover::before { transform: scaleY(1); }
+.opt.selected {
+  border-color: rgba(255,29,155,0.5);
+  background: rgba(255,29,155,0.08);
+}
+.opt.selected::before { transform: scaleY(1); }
+
+.opt-letter {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 13px; color: var(--pink);
+  margin-right: 11px; letter-spacing: 1px;
+}
+
+.advance-btn {
+  display: none;
+  width: 100%; margin-top: 22px;
+  padding: 16px 24px;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.15);
+  color: var(--cream);
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 16px; letter-spacing: 3px;
+  cursor: pointer; transition: all 0.2s ease;
+}
+.advance-btn.show { display: block; animation: riseIn 0.3s ease; }
+.advance-btn:hover { border-color: var(--teal); color: var(--teal); }
+
+/* ─── EMAIL GATE ─── */
+.gate-kicker {
+  font-size: 9px; letter-spacing: 4px;
+  color: var(--teal); text-transform: uppercase;
+  display: block; margin-bottom: 20px;
+}
+.gate-h {
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(28px, 6vw, 42px);
+  font-weight: 900; line-height: 1.05;
+  margin-bottom: 16px;
+}
+.gate-h em { font-style: italic; color: var(--pink); }
+
+.gate-body {
+  font-size: 12.5px; color: var(--silver);
+  line-height: 1.8; margin-bottom: 16px;
+}
+
+.gate-bonus {
+  font-size: 12px; color: var(--cream);
+  line-height: 1.7; margin-bottom: 30px;
+  padding: 14px 16px;
+  border: 1px solid rgba(81,249,193,0.2);
+  border-left: 2px solid var(--teal);
+  background: rgba(81,249,193,0.03);
+}
+.gate-bonus strong { color: var(--teal); font-weight: 500; }
+
+.email-field {
+  width: 100%;
+  padding: 17px 18px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: var(--cream);
+  font-family: 'DM Mono', monospace;
+  font-size: 14px; outline: none;
+  transition: border-color 0.25s;
+  margin-bottom: 10px;
+}
+.email-field:focus { border-color: var(--teal); }
+.email-field::placeholder { color: rgba(255,255,255,0.25); }
+
+.fine-print {
+  font-size: 9px; letter-spacing: 1px;
+  color: rgba(255,255,255,0.2);
+  text-align: center; margin-top: 12px;
+  text-transform: uppercase;
+}
+
+.email-err {
+  font-size: 10px; letter-spacing: 1px;
+  color: var(--pink); min-height: 14px;
+  margin-bottom: 6px; opacity: 0;
+  transition: opacity 0.2s;
+}
+.email-err.show { opacity: 1; }
+
+.skip-link {
+  display: block; width: 100%;
+  background: none; border: none;
+  color: rgba(255,255,255,0.28);
+  font-family: 'DM Mono', monospace;
+  font-size: 11px; letter-spacing: 0.5px;
+  cursor: pointer; margin-top: 14px;
+  text-decoration: underline; text-underline-offset: 3px;
+  transition: color 0.2s;
+}
+.skip-link:hover { color: var(--silver); }
+
+/* ─── SCORECARD ─── */
+.scorecard {
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.02);
+  margin-bottom: 32px;
+  overflow: hidden;
+}
+.sc-row {
+  display: flex;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.sc-cell {
+  flex: 1;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 16px 14px;
+  border-right: 1px solid rgba(255,255,255,0.08);
+}
+.sc-cell:last-child { border-right: none; }
+.sc-cell-score { align-items: center; text-align: center; }
+.sc-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 8px; letter-spacing: 2px;
+  text-transform: uppercase; color: rgba(255,255,255,0.35);
+}
+.sc-val {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 20px; letter-spacing: 1.5px; line-height: 1;
+}
+.sc-integrity {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 34px; letter-spacing: 1px; line-height: 1;
+  color: var(--cream);
+}
+.sc-pct {
+  font-size: 18px; opacity: 0.6;
+}
+.sc-note {
+  font-family: 'DM Mono', monospace;
+  font-size: 9px; letter-spacing: 2px;
+  text-transform: uppercase; color: rgba(255,255,255,0.25);
+  text-align: center; padding: 10px 0 11px;
+}
+
+/* ─── RESULTS ─── */
+.result-stamp {
+  display: inline-block;
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 10px; letter-spacing: 4px;
+  color: var(--pink);
+  border: 1px solid rgba(255,29,155,0.4);
+  padding: 5px 14px; margin-bottom: 22px;
+}
+
+.result-profile-name {
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(40px, 9vw, 66px);
+  font-weight: 900; line-height: 0.95;
+  margin-bottom: 6px; letter-spacing: -1px;
+}
+.result-profile-name .the { color: var(--silver); opacity: 0.5; font-size: 0.55em; display: block; margin-bottom: 4px; font-weight: 400; letter-spacing: 2px; font-style: normal; font-family: 'Bebas Neue', sans-serif; }
+.result-profile-name .name { color: var(--cream); display: block; }
+.result-profile-name .name em { color: var(--teal); font-style: italic; }
+
+/* Leak accent colors (result name + inline strongs) */
+.leak-purple { color: var(--purple); }
+.leak-teal   { color: var(--teal); }
+.leak-cream  { color: var(--cream); }
+.leak-pink   { color: var(--pink); }
+
+.ladder-note {
+  margin-top: 28px;
+  padding: 20px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-left: 2px solid var(--teal);
+  background: rgba(81,249,193,0.02);
+}
+
+.result-tagline {
+  font-size: 13px; color: var(--pink);
+  font-style: italic; margin-bottom: 30px;
+  letter-spacing: 0.3px;
+}
+
+.result-divider {
+  width: 100%; height: 1px;
+  background: linear-gradient(90deg, var(--pink), var(--purple), transparent);
+  margin: 28px 0;
+}
+
+.result-block { margin-bottom: 28px; }
+
+.r-label {
+  font-size: 8px; letter-spacing: 4px;
+  color: var(--teal); text-transform: uppercase;
+  display: block; margin-bottom: 10px;
+}
+
+.r-text {
+  font-size: 13px; line-height: 1.85;
+  color: var(--silver);
+}
+.r-text strong { color: var(--cream); font-weight: 500; }
+.r-text em { color: var(--pink); font-style: italic; }
+
+.blind-spot-box {
+  border: 1px solid rgba(155,77,255,0.3);
+  background: rgba(155,77,255,0.05);
+  padding: 20px 22px; margin: 14px 0;
+}
+.blind-spot-box .bsh {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 16px; letter-spacing: 2px;
+  color: var(--purple); margin-bottom: 8px;
+}
+.blind-spot-box .bst {
+  font-size: 12.5px; line-height: 1.75;
+  color: var(--silver);
+}
+
+.root-box {
+  border-left: 3px solid var(--purple);
+  padding: 18px 20px;
+  background: rgba(155,77,255,0.04);
+  margin: 14px 0;
+}
+.root-box .rh {
+  font-size: 9px; letter-spacing: 3px;
+  color: var(--purple); text-transform: uppercase;
+  margin-bottom: 8px; display: block;
+}
+.root-box .rt {
+  font-size: 12.5px; line-height: 1.75;
+  color: var(--silver);
+}
+.root-box .rt strong { color: var(--cream); }
+
+.weapon-block {
+  border-left: 3px solid var(--pink);
+  padding: 20px 22px;
+  background: rgba(255,29,155,0.05);
+  margin: 20px 0;
+}
+.weapon-block .wl {
+  font-size: 8px; letter-spacing: 4px;
+  color: var(--pink); text-transform: uppercase;
+  display: block; margin-bottom: 14px;
+}
+.weapon-block .ws {
+  font-family: 'Playfair Display', serif;
+  font-size: 20px; font-style: italic;
+  color: var(--cream); line-height: 1.35;
+  margin-bottom: 12px;
+}
+.weapon-block .ww {
+  font-size: 11px; color: var(--silver);
+  opacity: 0.65; line-height: 1.7;
+}
+
+.also-box {
+  background: rgba(255,255,255,0.025);
+  border: 1px solid rgba(255,255,255,0.07);
+  padding: 18px 20px; margin-top: 24px;
+}
+.also-box .ah {
+  font-size: 9px; letter-spacing: 3px;
+  color: var(--silver); opacity: 0.5;
+  text-transform: uppercase; margin-bottom: 12px;
+  display: block;
+}
+.also-profiles { display: flex; flex-direction: column; gap: 8px; }
+.also-item {
+  font-size: 11.5px; color: var(--silver);
+  padding: 8px 12px;
+  border-left: 2px solid rgba(155,77,255,0.3);
+}
+.also-item strong { color: var(--purple); font-weight: 400; }
+
+/* Secondary leak reveal block */
+.secondary-leak-box {
+  margin: 28px 0;
+  padding: 22px 20px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(155,77,255,0.04);
+}
+.sl-header {
+  display: flex; align-items: center; gap: 16px;
+  margin-bottom: 16px;
+}
+.sl-col {
+  display: flex; flex-direction: column; gap: 4px;
+  flex: 1;
+}
+.sl-label {
+  font-size: 9px; letter-spacing: 2px;
+  text-transform: uppercase; color: rgba(255,255,255,0.35);
+  font-family: 'DM Mono', monospace;
+}
+.sl-name {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 28px; letter-spacing: 2px; line-height: 1;
+}
+.sl-divider {
+  font-family: 'Playfair Display', serif;
+  font-size: 22px; color: rgba(255,255,255,0.2);
+  flex-shrink: 0; padding-top: 14px;
+}
+.sl-combo {
+  font-size: 12px; color: var(--silver);
+  line-height: 1.7; font-style: italic;
+  border-top: 1px solid rgba(255,255,255,0.07);
+  padding-top: 14px;
+}
+
+.upsell {
+  border: 1px solid rgba(155,77,255,0.28);
+  background: rgba(155,77,255,0.04);
+  padding: 30px 26px; margin-top: 40px;
+  text-align: center;
+}
+.upsell-eyebrow {
+  font-size: 9px; letter-spacing: 3px;
+  color: var(--purple); text-transform: uppercase;
+  display: block; margin-bottom: 14px;
+}
+.upsell-h {
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(22px, 4vw, 30px);
+  font-weight: 700; line-height: 1.15;
+  margin-bottom: 14px; color: var(--cream);
+}
+.upsell-h em { color: var(--purple); font-style: italic; }
+.upsell-body {
+  font-size: 12px; color: var(--silver);
+  line-height: 1.8; margin-bottom: 24px;
+}
+
+.share-strip {
+  display: flex; gap: 8px; margin-top: 14px;
+}
+.share-btn {
+  flex: 1; padding: 12px 8px;
+  background: transparent;
+  border: 1px solid rgba(255,255,255,0.1);
+  color: var(--silver);
+  font-family: 'DM Mono', monospace;
+  font-size: 10px; letter-spacing: 1px;
+  cursor: pointer; transition: all 0.2s;
+  text-transform: uppercase;
+}
+.share-btn:hover { border-color: var(--teal); color: var(--teal); }
+
+@media (max-width: 480px) {
+  .wrap { padding: 36px 18px 80px; }
+  .share-strip { flex-direction: column; }
+  .meta-row { flex-direction: column; }
+  .meta-item { border-right: none; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .meta-item:last-child { border-bottom: none; }
+}
+</style>
+</head>
+<body>
+
+<div class="glow-tl"></div>
+<div class="glow-br"></div>
+<div class="scanline"></div>
+
+<div class="wrap">
+
+  <div class="masthead">
+    <div class="masthead-name">The Deviant's Guide</div>
+    <div class="masthead-sub">Rules for the Unruly</div>
+  </div>
+
+  <!-- ═══════════════════════════════ INTRO ═══════════════════════════════ -->
+  <div class="screen active" id="s-intro">
+
+    <span class="intro-kicker">Free Diagnostic · The Boundary Leak Audit</span>
+
+    <h1 class="intro-h1">
+      Discover What
+      <span class="line2">Your Brain Does</span>
+      <span class="line3">The Moment You</span>
+      <span class="line3">Disappoint Someone.</span>
+    </h1>
+
+    <div class="intro-rule"></div>
+
+    <p class="intro-body">
+      Not what you <em>think</em> you do. What actually happens - in the half-second before you've decided anything.
+    </p>
+    <p class="intro-body">
+      Someone gets disappointed in you. A sigh. A silence. A shift in the air. And something in you <strong>moves</strong> before you've had a say in it.
+    </p>
+    <p class="intro-body">
+      That's the leak. The place your boundary drains out before you've consciously made a choice.
+    </p>
+
+    <div class="warning-box">
+      <strong>This audit doesn't ask whether you have boundaries.</strong><br>
+      You do. It finds the exact moment they leak - the reflex that fires when someone's disappointment lands, before your judgment gets a vote.
+    </div>
+
+    <div class="leak-teaser">
+      <p class="lt-lead">Everyone leaks somewhere.</p>
+      <p class="lt-line">Some people carry feelings that were never theirs to hold.</p>
+      <p class="lt-line">Some surrender just to make the tension stop.</p>
+      <p class="lt-line">Some start keeping score.</p>
+      <p class="lt-line">Some start paying for a crime nobody accused them of.</p>
+      <p class="lt-close">You only have one primary leak.<br><em>Five questions to find it.</em></p>
+    </div>
+
+    <div class="meta-row">
+      <div class="meta-item">
+        <span class="meta-num">5</span>
+        <span class="meta-label">Questions</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-num">~2</span>
+        <span class="meta-label">Minutes</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-num">1</span>
+        <span class="meta-label">Primary Leak</span>
+      </div>
+    </div>
+
+    <button class="btn-main" onclick="go('s-questions')">RUN THE AUDIT →</button>
+    <p style="font-size:9px;color:rgba(255,255,255,0.2);text-align:center;margin-top:14px;letter-spacing:2px;text-transform:uppercase;">No therapy-speak. No fake reassurance. Just the truth.</p>
+
+  </div>
+
+  <!-- ═══════════════════════════════ QUESTIONS ═══════════════════════════════ -->
+  <div class="screen" id="s-questions">
+    <div class="progress-track" id="prog"></div>
+    <div class="q-meta">
+      <span class="q-num" id="qnum"></span>
+      <span class="q-face-tag" id="qface"></span>
+    </div>
+    <h2 class="q-headline" id="qtext"></h2>
+    <p class="q-framing" id="qframing"></p>
+    <div class="scene" id="qscene"></div>
+    <div class="options" id="qopts"></div>
+    <button class="advance-btn" id="adv-btn" onclick="advance()">CONTINUE →</button>
+  </div>
+
+  <!-- ═══════════════════════════════ EMAIL GATE ═══════════════════════════════ -->
+  <div class="screen" id="s-email">
+    <span class="gate-kicker">Audit Complete</span>
+    <h2 class="gate-h">Your leak is identified.<br>Where do we<br><em>send the breakdown?</em></h2>
+    <p class="gate-body">
+      You'll get your full result — your leak, where it opens, and the exact line to use the next moment someone's disappointment lands. Plus the other three leaks, so you can read them in everyone around you.
+    </p>
+    <p class="gate-bonus">
+      + a one-page <strong>Emergency Boundary Script Sheet</strong> for the next time guilt shows up wearing someone else's face.
+    </p>
+    <input type="email" id="email-in" class="email-field" placeholder="your@email.com" autocomplete="email" inputmode="email">
+    <p id="email-err" class="email-err"></p>
+    <button class="btn-main" id="gate-submit" onclick="submitEmail()">SHOW MY RESULT →</button>
+    <button class="skip-link" onclick="showResult()">no thanks, just show the result</button>
+    <p class="fine-print">No spam. Unsubscribe anytime. Society doesn't live here.</p>
+  </div>
+
+  <!-- ═══════════════════════════════ RESULTS ═══════════════════════════════ -->
+  <div class="screen" id="s-results"></div>
+
+</div><!-- /wrap -->
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════════
+//  CONFIG — EDIT THESE TWO LINES BEFORE YOU GO LIVE
+// ═══════════════════════════════════════════════════════════════════════════
+//
+//  1) KIT_FORM_ACTION — your Kit (ConvertKit) hosted-form POST URL.
+//     Kit: Grow → Forms → (your form) → Embed → copy the URL inside
+//     <form action="https://app.kit.com/forms/XXXXXXX/subscriptions">.
+//     Until you paste it, the quiz still works — it skips the send and
+//     shows the result, so you can test everything now.
+//
+//  2) PRODUCT_URLS — your Gumroad links. The result page points each leak
+//     to the product that fixes it. Paste all four (they can repeat if a
+//     product isn't live yet — e.g. point everything at the Exit to start).
+//
+const KIT_FORM_ACTION = "";  // e.g. "https://app.kit.com/forms/1234567/subscriptions"
+
+const PRODUCT_URLS = {
+  exit:        "",  // Bitch-Proof Exit       — e.g. "https://thedeviantsguide.gumroad.com/l/bitch-proof-exit"
+  sayingless:  "",  // Saying Less
+  cheatcodes:  "",  // Dirty Confidence Cheat Codes
+};
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── QUIZ DATA ───────────────────────────────────────────────────────────────
+// Internal scoring keys: absorb / fold / tally / bleed
+//   ABSORB → carries feelings that aren't theirs   (feels it in the body)
+//   FOLD   → trades authenticity for relief         (caves to end tension)
+//   TALLY  → keeps score, audits the debt           (runs the numbers)
+//   BLEED  → pays emotionally before anyone asks     (preemptive self-punishment)
+
+const Qs = [
+  {
+    face: "Leak 1: The Sigh",
+    headline: "They don't argue. They just... deflate.",
+    framing: "Notice your first physical response. Not what you think you should do.",
+    scene: "You say no to something. They don't push back. They go quiet. Maybe a small \"oh.\" Maybe <strong>\"no, it's fine, don't worry about it\"</strong> in a voice that is very clearly not fine. Then they move on.",
+    opts: [
+      { t: "I feel their disappointment land in my body, like it's mine to hold now.", p: "absorb" },
+      { t: "I hold the no, but the discomfort is so loud I can feel myself about to cave.", p: "fold" },
+      { t: "I start calculating. Have I been giving enough lately? Is this actually fair?", p: "tally" },
+      { t: "I'm already apologizing, over-explaining, doing penance they never asked for.", p: "bleed" },
+    ]
+  },
+  {
+    face: "Leak 2: The Martyr Move",
+    headline: "They make their sacrifice visible.",
+    framing: "What's the first thing that moves in you?",
+    scene: "\"I just do everything around here, and it's fine, I'm used to it.\" Said while doing the thing. Not asking for help. Just <strong>making sure you know they're doing it alone.</strong>",
+    opts: [
+      { t: "I feel the weight of how tired they are. It settles on me like it's my fault.", p: "absorb" },
+      { t: "I cave and help, even though I was busy, just to make the feeling stop.", p: "fold" },
+      { t: "I start reviewing the evidence. Have I been pulling my weight or not?", p: "tally" },
+      { t: "I drop everything and over-give to balance a debt nobody actually named.", p: "bleed" },
+    ]
+  },
+  {
+    face: "Leak 3: The Disappointed Silence",
+    headline: "They go quiet after a choice they didn't like.",
+    framing: "What do you do in the first 30 minutes?",
+    scene: "You made a decision. It wasn't wrong. But now they're quiet. Not cold exactly. Just <strong>noticeably less warm.</strong> Present, but elsewhere.",
+    opts: [
+      { t: "Their distance feels like a thing I caused, even when I know I didn't.", p: "absorb" },
+      { t: "I find a reason to check in, smooth it over, get the warmth back. Whatever ends it.", p: "fold" },
+      { t: "I replay the decision on a loop, auditing whether I actually owe them an apology.", p: "tally" },
+      { t: "I start making it up to them before they've even said what's wrong.", p: "bleed" },
+    ]
+  },
+  {
+    face: "Leak 4: The History Lesson",
+    headline: "\"After everything I've done for you.\"",
+    framing: "Be honest about the first thing that lands.",
+    scene: "You hold a boundary. They don't argue it. They <strong>invoke the past.</strong> Every favor. Every sacrifice. Laid out like a receipt you're expected to pay.",
+    opts: [
+      { t: "I feel the full weight of everything they've given. It's heavy. It changes my answer.", p: "absorb" },
+      { t: "I feel myself folding just to escape the guilt, even knowing the debt's manufactured.", p: "fold" },
+      { t: "I actually start tallying. What HAVE I done for them? Does this receipt check out?", p: "tally" },
+      { t: "I instantly feel like I owe, and I'm already paying it down before I've thought it through.", p: "bleed" },
+    ]
+  },
+  {
+    face: "Leak 5: The Slow Burn",
+    headline: "It's not one moment. It's a pattern you've been inside for months.",
+    framing: "When you finally see the pattern, what do you do with it?",
+    scene: "You realize the guilt has been <strong>quietly running your decisions</strong> for a long time. Small redirects. Swallowed nos. Choices made for peace instead of truth. You can see it now, looking back.",
+    opts: [
+      { t: "I feel grief. For the version of me that kept absorbing everyone else's weight.", p: "absorb" },
+      { t: "I feel exhausted. All that folding, all that caving. I don't know how to stop.", p: "fold" },
+      { t: "I get angry. I want to reopen every instance and settle what was actually fair.", p: "tally" },
+      { t: "I want to make up for all of it at once. Over-correct. Bleed to repair the whole thing.", p: "bleed" },
+    ]
+  }
+];
+
+// ─── RESULTS DATA ────────────────────────────────────────────────────────────
+
+const Results = {
+  absorb: {
+    name: "Absorb",
+    accent: "purple",
+    tagline: "You carry feelings that were never yours to hold.",
+    profile: `When someone's disappointed, you don't just notice it. <strong>You feel it in your body, as if it's yours now.</strong> Their mood becomes your weather. You can't always tell where their emotion ends and your responsibility begins. And that blurred line is exactly where they set up camp.`,
+    blind_spot_h: "WHERE IT LEAKS",
+    blind_spot: `You've fused two things that aren't actually connected: feeling someone's pain, and being responsible for fixing it. You can feel exactly how disappointed someone is, hold that with them, and still not change your answer. But in practice the sensation and the obligation arrive together, so their feeling lands in your body as your problem to solve.`,
+    root_h: "WHERE IT COMES FROM",
+    root: `You probably developed this sensitivity somewhere that <strong>reading other people's emotions was survival.</strong> You got very good at it. But the same antenna that lets you see people deeply also makes you porous in their direction. The leak isn't your empathy. It's that nobody taught you empathy has an off-ramp that isn't self-sacrifice.`,
+    script: `"I can feel how much this matters to you. I'm still saying no."`,
+    script_why: `You're not turning off the empathy. You're refusing to let it make the decision. The line honors what they feel without making it your fault or your fix. It's the hardest version, and the one that closes the leak.`
+  },
+  fold: {
+    name: "Fold",
+    accent: "teal",
+    tagline: "You trade what's true for what makes the feeling stop.",
+    profile: `You're not naive. You often see the move forming in real time. <strong>But holding your position through someone else's displeasure is almost physically unbearable.</strong> So you fold. Not because you were wrong. Because the tension got too loud and caving felt like air.`,
+    blind_spot_h: "WHERE IT LEAKS",
+    blind_spot: `You've learned to read tension as danger. When something stays unresolved, part of you treats it like an emergency, and giving in feels like relief. But it isn't resolution. It's just quiet until next time. And next time, they already know that enough pressure makes you trade your real answer for peace.`,
+    root_h: "WHERE IT COMES FROM",
+    root: `Somewhere in your history, conflict wasn't just uncomfortable. It was <strong>unpredictable, or unsafe, or it cost you something.</strong> Folding became the exit. Your system learned one rule: end the tension at any price. The leak opens the instant discomfort shows up, because discomfort is the thing you were trained to escape fastest.`,
+    script: `"I'm not changing my answer to end the awkwardness. Take the time you need."`,
+    script_why: `You name the real mechanic out loud without apologizing for it. You're not chasing resolution and you're not racing to fill the silence. You let the discomfort sit. That's the entire fix. The fold only works if you move first.`
+  },
+  tally: {
+    name: "Tally",
+    accent: "cream",
+    tagline: "They turn your sense of fairness into the weapon.",
+    profile: `You're committed to fairness. You track what people give and what they take. You believe it should balance. <strong>And that makes you exquisitely easy to move</strong> for anyone willing to misrepresent the ledger, because part of you will always stop and check the math.`,
+    blind_spot_h: "WHERE IT LEAKS",
+    blind_spot: `When someone says "after everything I've done," you audit it. You run the numbers. The problem: they set the terms of the accounting. They decide which favors count, what each one's worth, and when the debt is paid. You're playing in a system they built, using rules they wrote, and you keep agreeing to the figures.`,
+    root_h: "WHERE IT COMES FROM",
+    root: `You likely grew up somewhere things weren't fair, and where <strong>tracking fairness was the only protection you had.</strong> Keeping score kept you safe, or kept you sane. It's not a flaw. It's a system that made sense once. The leak opens when someone introduces a false debt and trusts your fairness instinct to take it seriously enough to pay.`,
+    script: `"I'm not auditing the history of this relationship right now. My answer stands."`,
+    script_why: `You refuse to enter their accounting at all. You don't argue the ledger. You don't counter with your own tally. You step off the field they built. The debt only exists while you're willing to collect it. Stop collecting and it disappears.`
+  },
+  bleed: {
+    name: "Bleed",
+    accent: "pink",
+    tagline: "You pay the price before anyone's even sent the bill.",
+    profile: `You don't wait for the guilt to land. <strong>You do their job for them.</strong> The second you sense disappointment, a sigh, a silence, a shift, you're already apologizing, over-explaining, over-giving. You're in the defendant's chair before anyone's filed a complaint, and you've started paying restitution for a crime nobody charged.`,
+    blind_spot_h: "WHERE IT LEAKS",
+    blind_spot: `You confuse their emotion with your guilt. Someone being disappointed doesn't mean you did something wrong, but in your body those two register as the same signal, so you move to fix it. The leak is preemptive. You bleed before they ask, which trains everyone around you that disappointment is the button that makes you pay.`,
+    root_h: "WHERE IT COMES FROM",
+    root: `Somewhere you learned that <strong>other people's discomfort was yours to fix.</strong> Maybe disappointment at home felt like danger. Maybe being "good" meant being responsible for everyone's feelings. So you got fast, fast enough to pay before the bill arrives. The leak isn't that you care. It's that you were trained to treat every flicker of someone else's displeasure as a debit from your account.`,
+    script: `"I can see you're disappointed. That doesn't change my answer."`,
+    script_why: `You're not pretending you don't see it. You're refusing to let it move you to pay. The line acknowledges them and closes the door in the same breath. There's nothing to argue with, and nothing for the guilt to bill you for.`
+  }
+};
+
+// Maps each leak to the product that fixes it + the cross-sell line.
+const LEAK_PRODUCT = {
+  absorb: {
+    key: "cheatcodes",
+    name: "Dirty Confidence Cheat Codes",
+    line: "You feel everything. The gap is what to actually SAY when it hits. Cheat Codes is the pre-loaded lines for the moment the feeling shows up and your mouth goes blank, so you stop performing availability and start holding your ground.",
+  },
+  fold: {
+    key: "sayingless",
+    name: "Saying Less",
+    line: "You fold because the silence feels dangerous and you rush to fill it. Saying Less is the system for the opposite: how to stop over-explaining, match the room instead of your anxiety, and let the tension sit until it works for you instead of against you.",
+  },
+  tally: {
+    key: "sayingless",
+    name: "Saying Less",
+    line: "You stay because you're auditing a ledger they control. Saying Less teaches you to step off the field entirely, the non-reply, the unanswered question, the refusal to argue the math. Less said, less to collect on.",
+  },
+  bleed: {
+    key: "exit",
+    name: "The Bitch-Proof Exit",
+    line: "You pay before anyone bills you. The Bitch-Proof Exit is what to do the second you spot the trap: the clean no, the walk-away, the exit that leaves nothing to screenshot and nothing for the guilt to charge you for.",
+  },
+};
+
+// One-liners for the "other three leaks" block
+const LEAK_BLURB = {
+  absorb: "carries feelings that were never theirs to hold.",
+  fold:   "trades what's true for whatever makes the tension stop.",
+  tally:  "gets moved through their own sense of fairness.",
+  bleed:  "pays emotionally before anyone's even asked.",
+};
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+
+let current = 0;
+let tally = { absorb: 0, fold: 0, tally: 0, bleed: 0 };
+let picked = null;
+
+// ─── NAVIGATION ──────────────────────────────────────────────────────────────
+
+function go(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (id === 's-questions') renderQ();
+}
+
+function renderQ() {
+  const q = Qs[current];
+
+  const prog = document.getElementById('prog');
+  prog.innerHTML = Qs.map((_, i) => {
+    let cls = 'prog-seg';
+    if (i < current) cls += ' done';
+    if (i === current) cls += ' active';
+    return `<div class="${cls}"></div>`;
+  }).join('');
+
+  document.getElementById('qnum').textContent = `${current + 1} of ${Qs.length}`;
+  document.getElementById('qface').textContent = q.face;
+  document.getElementById('qtext').textContent = q.headline;
+  document.getElementById('qframing').textContent = q.framing;
+  document.getElementById('qscene').innerHTML = q.scene;
+
+  const opts = document.getElementById('qopts');
+  const letters = ['A','B','C','D'];
+  opts.innerHTML = q.opts.map((o, i) => `
+    <button class="opt" onclick="pick(${i}, '${o.p}')">
+      <span class="opt-letter">${letters[i]}</span>${o.t}
+    </button>
+  `).join('');
+
+  const adv = document.getElementById('adv-btn');
+  adv.classList.remove('show');
+  adv.textContent = current === Qs.length - 1 ? 'SEE MY RESULT →' : 'CONTINUE →';
+  picked = null;
+}
+
+function pick(idx, leak) {
+  if (picked !== null) {
+    const prev = Qs[current].opts[picked].p;
+    tally[prev] = Math.max(0, tally[prev] - 1);
+  }
+  picked = idx;
+  tally[leak]++;
+
+  document.querySelectorAll('.opt').forEach((o, i) => {
+    o.classList.toggle('selected', i === idx);
+  });
+  document.getElementById('adv-btn').classList.add('show');
+}
+
+function advance() {
+  if (picked === null) return;
+  current++;
+  if (current < Qs.length) {
+    renderQ();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  } else {
+    go('s-email');
+  }
+}
+
+// ─── EMAIL CAPTURE ─────────────────────────────────────────────────────────
+
+function validEmail(e) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+}
+
+function submitEmail() {
+  const input = document.getElementById('email-in');
+  const err = document.getElementById('email-err');
+  const btn = document.getElementById('gate-submit');
+  const email = input.value.trim();
+
+  if (!validEmail(email)) {
+    err.textContent = 'That email doesn\u2019t look right. Try again.';
+    err.classList.add('show');
+    input.focus();
+    return;
+  }
+  err.classList.remove('show');
+
+  if (!KIT_FORM_ACTION) { showResult(); return; }
+
+  btn.textContent = 'SENDING\u2026';
+  btn.disabled = true;
+
+  const data = new FormData();
+  data.append('email_address', email);
+  data.append('fields[boundary_leak]', getTop());  // tags subscriber: absorb/fold/tally/bleed
+
+  fetch(KIT_FORM_ACTION, { method: 'POST', body: data, mode: 'no-cors' })
+    .finally(() => { showResult(); });
+}
+
+// ─── SECONDARY LEAK ──────────────────────────────────────────────────────────
+
+// Natural fallback pairings when scores are tied or close.
+// Key = primary leak, value = secondary leak that most commonly shows up with it.
+const NATURAL_PAIR = {
+  absorb: 'fold',
+  fold:   'bleed',
+  tally:  'absorb',
+  bleed:  'fold',
+};
+
+function getSecond() {
+  const sorted = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+  const topKey = sorted[0][0];
+  const topScore = sorted[0][1];
+  // If there's a genuine second (different key, nonzero score)
+  const candidate = sorted[1];
+  if (candidate && candidate[1] > 0 && candidate[0] !== topKey) {
+    return candidate[0];
+  }
+  // All answers went to one bucket — use natural pairing
+  return NATURAL_PAIR[topKey];
+}
+
+// One sentence per [primary + secondary] combination.
+// Format: when PRIMARY stops working, the person shifts to SECONDARY.
+const COMBO_SENTENCE = {
+  'absorb+fold':  'When absorbing no longer eases the feeling, you tend to fold — giving up your answer just to get the weight off.',
+  'absorb+tally': 'When absorbing gets too heavy, you often switch to tallying — quietly auditing whether you\'ve been taken from.',
+  'absorb+bleed': 'When absorbing peaks, you can tip into bleeding — over-giving preemptively so nobody gets disappointed enough to add to the weight.',
+  'fold+absorb':  'When folding stops working, you tend to absorb — carrying their mood as your own until the tension dissolves.',
+  'fold+bleed':   'When folding stops working, you usually start bleeding — over-apologising and over-giving before anyone\'s even asked.',
+  'fold+tally':   'When folding stops working, you start tallying — suddenly hyperaware of what this cost you and whether it was fair.',
+  'tally+absorb': 'When tallying gets exhausting, you often absorb — taking the emotional weight on yourself just to close the ledger.',
+  'tally+fold':   'When tallying escalates, you sometimes fold — deciding the debt isn\'t worth the fight and conceding the position.',
+  'tally+bleed':  'When tallying spikes, you can tip into bleeding — paying down a debt you\'re not even sure is real, just to quiet the audit.',
+  'bleed+fold':   'When bleeding runs out of road, you tend to fold — giving in completely because there\'s nothing left to pre-pay.',
+  'bleed+absorb': 'When bleeding doesn\'t land the relief you\'re looking for, you shift into absorbing — carrying their feeling directly so at least it\'s somewhere.',
+  'bleed+tally':  'When bleeding doesn\'t work, you start tallying — tracking what you\'ve given and quietly wondering if any of it registered.',
+};
+
+function getComboSentence(primary, secondary) {
+  return COMBO_SENTENCE[`${primary}+${secondary}`] || '';
+}
+
+// ─── BOUNDARY INTEGRITY SCORE ────────────────────────────────────────────────
+// Derived from primary leak type and how concentrated the answers were.
+// Transparent logic: BLEED is most automatic (heaviest drain), TALLY most
+// conscious (lightest). Secondary leak adds a smaller penalty. Clamped 18–78
+// so no one gets 0 (nihilistic) or 100 (unearned). Real variation, real signal.
+
+const PRIMARY_DRAIN = { bleed: 40, fold: 32, absorb: 28, tally: 22 };
+const SECONDARY_DRAIN = { bleed: 18, fold: 14, absorb: 12, tally: 9 };
+
+function getBoundaryIntegrity(primary, secondary) {
+  const total = Object.values(tally).reduce((a, b) => a + b, 0) || 5;
+  const primaryConc = tally[primary] / total;   // 0.4–1.0
+  const secondaryConc = tally[secondary] / total; // 0–0.6
+
+  const base = 100;
+  const primaryPenalty = PRIMARY_DRAIN[primary] * (0.7 + 0.6 * primaryConc);
+  const secondaryPenalty = SECONDARY_DRAIN[secondary] * secondaryConc;
+  const raw = Math.round(base - primaryPenalty - secondaryPenalty);
+  return Math.max(18, Math.min(78, raw));
+}
+
+// ─── RESULT ──────────────────────────────────────────────────────────────────
+
+function getTop() {
+  return Object.entries(tally).sort((a, b) => b[1] - a[1])[0][0];
+}
+
+function productHref(key) {
+  const url = PRODUCT_URLS[key];
+  return url ? url : '#';
+}
+
+function openProduct(key) {
+  const url = PRODUCT_URLS[key];
+  if (url) { window.open(url, '_blank'); }
+  else { alert('Set this product link in the PRODUCT_URLS block at the top of the script.'); }
+}
+
+function showResult() {
+  const top = getTop();
+  const second = getSecond();
+  const r = Results[top];
+  const rs = Results[second];
+  const combo = getComboSentence(top, second);
+  const prod = LEAK_PRODUCT[top];
+  const others = Object.keys(Results).filter(k => k !== top && k !== second);
+
+  const integrity = getBoundaryIntegrity(top, second);
+
+  document.getElementById('s-results').innerHTML = `
+    <div class="scorecard">
+      <div class="sc-row">
+        <div class="sc-cell">
+          <span class="sc-label">Primary Leak</span>
+          <span class="sc-val leak-${r.accent}">${r.name.toUpperCase()}</span>
+        </div>
+        <div class="sc-cell">
+          <span class="sc-label">Secondary Leak</span>
+          <span class="sc-val leak-${rs.accent}">${rs.name.toUpperCase()}</span>
+        </div>
+        <div class="sc-cell sc-cell-score">
+          <span class="sc-label">Boundary Integrity</span>
+          <span class="sc-integrity">${integrity}<span class="sc-pct">%</span></span>
+        </div>
+      </div>
+      <p class="sc-note">Screenshot this. Then find out why.</p>
+    </div>
+
+    <div class="result-profile-name">
+      <span class="the">YOUR LEAK</span>
+      <span class="name leak-${r.accent}">${r.name}</span>
+    </div>
+    <p class="result-tagline">${r.tagline}</p>
+
+    <div class="result-divider"></div>
+
+    <div class="result-block">
+      <span class="r-label">What This Is</span>
+      <p class="r-text">${r.profile}</p>
+    </div>
+
+    <div class="blind-spot-box">
+      <div class="bsh">${r.blind_spot_h}</div>
+      <p class="bst">${r.blind_spot}</p>
+    </div>
+
+    <div class="result-divider"></div>
+
+    <div class="result-block">
+      <span class="r-label">Use This Next Time</span>
+      <div class="weapon-block">
+        <span class="wl">The Line</span>
+        <div class="ws">${r.script}</div>
+        <p class="ww">${r.script_why}</p>
+      </div>
+    </div>
+
+    <div class="secondary-leak-box">
+      <span class="sc-label" style="display:block;margin-bottom:10px;">The Combination</span>
+      ${combo ? `<p class="sl-combo" style="margin:0;">${combo}</p>` : ''}
+    </div>
+
+    <div class="also-box">
+      <span class="ah">The Other Leaks</span>
+      <div class="also-profiles">
+        ${[...others].map(k => `<div class="also-item"><strong class="leak-${Results[k].accent}">${Results[k].name}</strong> - ${LEAK_BLURB[k]}</div>`).join('')}
+      </div>
+    </div>
+
+    <div class="upsell">
+      <span class="upsell-eyebrow">Spotting the leak is step one. Sealing it is the rest.</span>
+      <h3 class="upsell-h">For your leak, start here:<br><em>${prod.name}</em></h3>
+      <p class="upsell-body">${prod.line}</p>
+      <button class="btn-main" onclick="openProduct('${prod.key}')">GET ${prod.name.toUpperCase()} →</button>
+      <p style="font-size:9px;color:rgba(255,255,255,0.2);margin-top:12px;letter-spacing:2px;text-transform:uppercase;">Pretty words. Dangerous ideas.</p>
+    </div>
+
+    <div class="ladder-note">
+      <span class="ah">The Full Sequence</span>
+      <div class="also-profiles">
+        <div class="also-item"><strong class="leak-pink">Bitch-Proof Exit</strong> - what to do the second you spot the trap.</div>
+        <div class="also-item"><strong class="leak-teal">Saying Less</strong> - how to stop over-explaining and leaking power.</div>
+        <div class="also-item"><strong class="leak-purple">Dirty Confidence Cheat Codes</strong> - exactly what to say instead.</div>
+      </div>
+    </div>
+
+    <div style="margin-top:32px;">
+      <p style="font-size:9px;color:rgba(255,255,255,0.25);letter-spacing:2px;text-transform:uppercase;text-align:center;margin-bottom:12px;">Send it to someone who needs this</p>
+      <div class="share-strip">
+        <button class="share-btn" onclick="copyResult('${r.name}', '${rs.name}', ${integrity}, '${r.tagline.replace(/'/g, "\\'")}')">COPY RESULT</button>
+        <button class="share-btn" onclick="tweetResult('${r.name}', '${rs.name}', ${integrity}, '${r.tagline.replace(/'/g, "\\'")}')">POST TO X</button>
+        <button class="share-btn" onclick="retake()">RETAKE</button>
+      </div>
+    </div>
+  `;
+
+  go('s-results');
+}
+
+function copyResult(primary, secondary, integrity, tagline) {
+  const txt = `The Boundary Leak Audit — @TheDeviantsGuide\n\nPrimary Leak: ${primary.toUpperCase()}\nSecondary Leak: ${secondary.toUpperCase()}\nBoundary Integrity: ${integrity}%\n\n"${tagline}"\n\nFind out where your boundaries drain:`;
+  navigator.clipboard.writeText(txt).then(() => {
+    alert('Copied. Drop it wherever it lands hardest.');
+  }).catch(() => {
+    alert('Copy failed — try selecting the text manually.');
+  });
+}
+
+function tweetResult(primary, secondary, integrity, tagline) {
+  const txt = encodeURIComponent(`The Boundary Leak Audit — @TheDeviantsGuide\n\nPrimary: ${primary.toUpperCase()} / Secondary: ${secondary.toUpperCase()}\nBoundary Integrity: ${integrity}%\n\n"${tagline}"\n\nFind out yours:`);
+  window.open(`https://twitter.com/intent/tweet?text=${txt}`, '_blank');
+}
+
+function retake() {
+  current = 0;
+  tally = { absorb: 0, fold: 0, tally: 0, bleed: 0 };
+  picked = null;
+  go('s-intro');
+}
+</script>
+</body>
+</html>
